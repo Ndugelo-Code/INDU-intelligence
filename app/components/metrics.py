@@ -71,7 +71,7 @@ def architecture_violations_view() -> rx.Component:
                 class_name="flex flex-col gap-2",
             ),
             rx.el.div(
-                rx.icon("square_check", class_name="h-6 w-6 text-green-500 mr-3"),
+                rx.icon("square-check", class_name="h-6 w-6 text-green-500 mr-3"),
                 rx.el.p(
                     "No architecture violations found.", class_name="text-gray-600"
                 ),
@@ -86,15 +86,21 @@ def architecture_violations_view() -> rx.Component:
 def dashboard_view() -> rx.Component:
     return rx.el.main(
         rx.el.div(
-            rx.el.h2(
-                "Dashboard",
-                class_name="text-3xl font-bold tracking-tight text-gray-900",
+            rx.el.div(
+                rx.el.h2(
+                    "Dashboard",
+                    class_name="text-3xl font-bold tracking-tight text-gray-900",
+                ),
+                rx.el.p(
+                    InduState.scan_target_display,
+                    class_name="text-sm text-gray-500 font-['JetBrains_Mono'] mt-1",
+                ),
             ),
             class_name="flex items-center justify-between",
         ),
         rx.el.div(
             metric_card("files", "Total Files", InduState.total_files.to_string()),
-            metric_card("save", "Total Size (MB)", InduState.total_size_mb),
+            metric_card("database", "Total Size (MB)", InduState.total_size_mb),
             metric_card("code", "Total Lines of Code", InduState.total_lines_of_code),
             class_name="grid gap-6 md:grid-cols-3 mt-6",
         ),
@@ -113,15 +119,8 @@ def initial_view() -> rx.Component:
                 class_name="mt-6 text-2xl font-semibold text-gray-800",
             ),
             rx.el.p(
-                "Run a scan to analyze your codebase and view metrics.",
+                "Upload a project or run a scan on the local codebase.",
                 class_name="mt-2 text-md text-gray-500",
-            ),
-            rx.el.button(
-                rx.icon("play", class_name="mr-2 h-5 w-5"),
-                "Run Initial Scan",
-                on_click=InduState.run_scan,
-                class_name="mt-6 flex items-center bg-orange-500 text-white font-semibold py-2 px-5 rounded-lg shadow-sm hover:bg-orange-600 transition-colors",
-                style={"boxShadow": "0px 1px 3px rgba(0,0,0,0.12)"},
             ),
             class_name="text-center flex flex-col items-center justify-center",
         ),

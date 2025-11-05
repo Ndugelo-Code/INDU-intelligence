@@ -1,11 +1,16 @@
 import reflex as rx
 import os
+import reflex as rx
+import os
 import time
 import logging
 import re
 import ast
 from typing import TypedDict, Any, Union
 import plotly.graph_objects as go
+import zipfile
+import tempfile
+import shutil
 
 
 class FileMetrics(TypedDict):
@@ -63,12 +68,13 @@ class InduState(rx.State):
     latest_snapshot: Snapshot | None = None
     scan_history: list[Snapshot] = []
     nav_items: list[dict[str, str]] = [
+        {"label": "Upload", "icon": "upload", "href": "#"},
         {"label": "Dashboard", "icon": "layout-dashboard", "href": "/"},
         {"label": "Components", "icon": "component", "href": "#"},
         {"label": "Dependencies", "icon": "file-json-2", "href": "#"},
         {"label": "Unused", "icon": "trash-2", "href": "#"},
     ]
-    active_page: str = "Dashboard"
+    active_page: str = "Upload"
     file_tree: FolderNode = {
         "name": "root",
         "folders": [],
@@ -78,6 +84,14 @@ class InduState(rx.State):
     current_path: list[str] = []
     search_query: str = ""
     filter_extension: str = ""
+    uploaded_files: list[str] = []
+    is_uploading: bool = False
+    uploaded_project_name: str | None = None
+    uploaded_project_path: str | None = None
+    uploaded_files: list[str] = []
+    is_uploading: bool = False
+    uploaded_project_name: str | None = None
+    uploaded_project_path: str | None = None
 
     @rx.event
     def set_active_page(self, page: str):
@@ -206,6 +220,12 @@ class InduState(rx.State):
         return unused
 
     @rx.var
+    def scan_target_display(self) -> str:
+        if self.uploaded_project_name:
+            return f"Uploaded: {self.uploaded_project_name}"
+        return "Local Project"
+
+    @rx.var
     def dependency_figure(self) -> go.Figure:
         if not self.latest_snapshot or "dependency_graph" not in self.latest_snapshot:
             return go.Figure()
@@ -253,10 +273,102 @@ class InduState(rx.State):
         )
         return fig
 
+    def _cleanup_temp_dir(self):
+        if self.uploaded_project_path and os.path.exists(self.uploaded_project_path):
+            try:
+                shutil.rmtree(self.uploaded_project_path)
+                self.uploaded_project_path = None
+                self.uploaded_project_name = None
+            except Exception as e:
+                logging.exception(f"Error cleaning up temp dir: {e}")
+
+    @rx.event
+    def on_app_load(self):
+        """Clean up any lingering temp directories when the app loads for a new session."""
+        self._cleanup_temp_dir()
+        self.active_page = "Upload"
+
+    @rx.event
+    def clear_upload(self):
+        self._cleanup_temp_dir()
+        self.uploaded_files = []
+        self.latest_snapshot = None
+        self.active_page = "Upload"
+        return rx.toast.info("Cleared uploaded project.")
+
+    @rx.event
+    async def handle_upload(self, files: list[rx.UploadFile]):
+        """Handle file uploads, extracting zip files if present."""
+        if not files:
+            yield rx.toast.error("No files selected for upload.")
+            return
+        self.is_uploading = True
+        yield
+        upload_successful = False
+        try:
+            self._cleanup_temp_dir()
+            self.uploaded_files = []
+            zip_processed = False
+            temp_dir = tempfile.mkdtemp()
+            self.uploaded_project_path = temp_dir
+            for file in files:
+                upload_data = await file.read()
+                file_path = os.path.join(temp_dir, file.name)
+                with open(file_path, "wb") as f:
+                    f.write(upload_data)
+                self.uploaded_files.append(file.name)
+                if file.name.endswith(".zip") and (not zip_processed):
+                    with zipfile.ZipFile(file_path, "r") as zip_ref:
+                        extract_path = os.path.join(
+                            temp_dir, os.path.splitext(file.name)[0]
+                        )
+                        os.makedirs(extract_path, exist_ok=True)
+                        zip_ref.extractall(extract_path)
+                    self.uploaded_project_path = extract_path
+                    self.uploaded_project_name = file.name
+                    self.uploaded_files = [f"{file.name} (project)"]
+                    zip_processed = True
+                    upload_successful = True
+                    yield rx.toast.success(f"Extracted project: {file.name}")
+                    break
+            if not zip_processed and files:
+                self.uploaded_project_name = f"{len(files)} individual files"
+                upload_successful = True
+            if not self.uploaded_project_name:
+                yield rx.toast.info(
+                    "Please upload a .zip project archive or individual files."
+                )
+        except zipfile.BadZipFile:
+            logging.exception("Bad zip file uploaded")
+            yield rx.toast.error("Uploaded file is not a valid zip archive.")
+            self._cleanup_temp_dir()
+        except Exception as e:
+            logging.exception(f"Upload failed: {e}")
+            yield rx.toast.error(f"An error occurred during upload: {e}")
+            self._cleanup_temp_dir()
+        finally:
+            self.is_uploading = False
+            if upload_successful:
+                yield InduState.run_scan
+            else:
+                yield
+
     @rx.event(background=True)
     async def run_scan(self):
         async with self:
             self.is_scanning = True
+            if not self.latest_snapshot and (not self.uploaded_project_path):
+                self.active_page = "Dashboard"
+                yield rx.toast.info("Running initial local scan...")
+            yield
+        scan_path = (
+            self.uploaded_project_path if self.uploaded_project_path else self.scan_path
+        )
+        if not os.path.exists(scan_path):
+            async with self:
+                self.is_scanning = False
+            yield rx.toast.error(f"Scan path does not exist: {scan_path}")
+            return
         files_data: list[FileMetrics] = []
         folders_data: dict[str, FolderMetrics] = {}
         total_files = 0
@@ -265,14 +377,9 @@ class InduState(rx.State):
         file_type_distribution: dict[str, int] = {}
         ignore_dirs = {".git", "__pycache__", "node_modules", ".web", "assets"}
         ignore_files = {".DS_Store"}
-        for root, dirs, files in os.walk(self.scan_path):
+        base_path_for_relpath = scan_path
+        for root, dirs, files in os.walk(scan_path):
             dirs[:] = [d for d in dirs if d not in ignore_dirs]
-            folder_path = os.path.relpath(root, self.scan_path)
-            if folder_path == ".":
-                folder_path = "/"
-            current_folder_files = 0
-            current_folder_size = 0
-            current_folder_file_types: dict[str, int] = {}
             for file in files:
                 if file in ignore_files:
                     continue
@@ -292,35 +399,25 @@ class InduState(rx.State):
                         loc = 0
                     _, ext = os.path.splitext(file)
                     ext = ext if ext else "Other"
+                    rel_file_path = os.path.relpath(file_path, base_path_for_relpath)
                     file_metric = FileMetrics(
-                        path=os.path.relpath(file_path, self.scan_path),
-                        size=size,
-                        lines_of_code=loc,
-                        extension=ext,
+                        path=rel_file_path, size=size, lines_of_code=loc, extension=ext
                     )
                     files_data.append(file_metric)
                     total_files += 1
                     total_size += size
                     total_loc += loc
-                    current_folder_files += 1
-                    current_folder_size += size
-                    current_folder_file_types[ext] = (
-                        current_folder_file_types.get(ext, 0) + 1
-                    )
                     file_type_distribution[ext] = file_type_distribution.get(ext, 0) + 1
                 except FileNotFoundError as e:
                     logging.exception(f"File not found during scan: {file_path} - {e}")
                     continue
-            if current_folder_files > 0:
-                folders_data[folder_path] = FolderMetrics(
-                    path=folder_path,
-                    total_files=current_folder_files,
-                    total_size=current_folder_size,
-                    file_types=current_folder_file_types,
-                )
-        dependency_graph = self._build_dependency_graph(files_data)
+        dependency_graph = self._build_dependency_graph(
+            files_data, base_path_for_relpath
+        )
         architecture_violations = self._validate_architecture(dependency_graph)
-        unused_components = self._find_unused_components(files_data, dependency_graph)
+        unused_components = self._find_unused_components(
+            files_data, dependency_graph, base_path_for_relpath
+        )
         snapshot = Snapshot(
             timestamp=time.time(),
             total_files=total_files,
@@ -333,7 +430,7 @@ class InduState(rx.State):
             architecture_violations=architecture_violations,
             unused_components=unused_components,
         )
-        tree = {"name": "root", "folders": [], "files": []}
+        tree = {"name": "root", "folders": [], "files": [], "file_count": 0}
         for file_metric in files_data:
             path_parts = file_metric["path"].split(os.sep)
             current_level = tree
@@ -344,11 +441,12 @@ class InduState(rx.State):
                 if not folder:
                     folder = {"name": part, "folders": [], "files": [], "file_count": 0}
                     current_level["folders"].append(folder)
-            current_level = folder
+                current_level = folder
             filename = path_parts[-1]
-            current_level["files"].append(
-                {"name": filename, "lines_of_code": file_metric["lines_of_code"]}
-            )
+            if current_level:
+                current_level["files"].append(
+                    {"name": filename, "lines_of_code": file_metric["lines_of_code"]}
+                )
         self._count_files_recursively(tree)
         async with self:
             self.latest_snapshot = snapshot
@@ -356,16 +454,19 @@ class InduState(rx.State):
             self.file_tree = tree
             self.current_path = []
             self.is_scanning = False
-        yield rx.toast.info("Scan complete!", duration=3000)
+            self.active_page = "Dashboard"
+        yield rx.toast.success("Scan complete!", duration=3000)
 
-    def _count_files_recursively(self, folder: FolderNode) -> int:
+    def _count_files_recursively(self, folder: FolderNode):
         file_count = len(folder["files"])
         for subfolder in folder["folders"]:
             file_count += self._count_files_recursively(subfolder)
         folder["file_count"] = file_count
         return file_count
 
-    def _parse_python_imports(self, content: str, file_path: str) -> list[str]:
+    def _parse_python_imports(
+        self, content: str, file_path: str, base_path: str
+    ) -> list[str]:
         imports = set()
         try:
             tree = ast.parse(content)
@@ -375,38 +476,46 @@ class InduState(rx.State):
                         imports.add(alias.name)
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
-                        module_path = node.module.split(".")
+                        module_path_parts = node.module.split(".")
                         if node.level > 0:
-                            base_path = os.path.dirname(file_path)
+                            source_dir = os.path.dirname(file_path)
+                            rel_path_base = source_dir
                             for _ in range(node.level - 1):
-                                base_path = os.path.dirname(base_path)
-                            rel_path = os.path.join(base_path, *module_path)
-                            imports.add(os.path.normpath(rel_path))
+                                rel_path_base = os.path.dirname(rel_path_base)
+                            abs_path = os.path.abspath(
+                                os.path.join(rel_path_base, *module_path_parts)
+                            )
+                            rel_to_scan_root = os.path.relpath(abs_path, base_path)
+                            imports.add(
+                                os.path.normpath(rel_to_scan_root).replace(os.sep, ".")
+                            )
                         else:
                             imports.add(node.module)
         except SyntaxError as e:
             logging.exception(f"Could not parse Python file {file_path}: {e}")
         return list(imports)
 
-    def _extract_file_dependencies(self, file_metric: FileMetrics) -> list[str]:
-        file_path = file_metric["path"]
+    def _extract_file_dependencies(
+        self, file_metric: FileMetrics, base_path: str
+    ) -> list[str]:
+        full_path = os.path.join(base_path, file_metric["path"])
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
         except (IOError, UnicodeDecodeError) as e:
-            logging.exception(f"Could not read file {file_path}: {e}")
+            logging.exception(f"Could not read file {full_path}: {e}")
             return []
         if file_metric["extension"] == ".py":
-            return self._parse_python_imports(content, file_path)
+            return self._parse_python_imports(content, full_path, base_path)
         return []
 
     def _build_dependency_graph(
-        self, files_data: list[FileMetrics]
+        self, files_data: list[FileMetrics], base_path: str
     ) -> dict[str, list[str]]:
         graph = {}
         for file_metric in files_data:
             if file_metric["extension"] == ".py":
-                dependencies = self._extract_file_dependencies(file_metric)
+                dependencies = self._extract_file_dependencies(file_metric, base_path)
                 graph[file_metric["path"]] = dependencies
         return graph
 
@@ -422,19 +531,24 @@ class InduState(rx.State):
         return violations
 
     def _find_unused_components(
-        self, files_data: list[FileMetrics], dependency_graph: dict[str, list[str]]
+        self,
+        files_data: list[FileMetrics],
+        dependency_graph: dict[str, list[str]],
+        base_path: str,
     ) -> list[str]:
         all_scanned_py_files = {
             f["path"] for f in files_data if f["extension"] == ".py"
         }
         all_imported_modules = set()
+        file_paths_relative = {f["path"] for f in files_data if f["extension"] == ".py"}
         for dependencies in dependency_graph.values():
             for dep in dependencies:
-                potential_path = os.path.join(*dep.split(".")) + ".py"
-                if os.path.exists(potential_path):
-                    all_imported_modules.add(os.path.normpath(potential_path))
-                if dep.startswith(("./", "../")) and os.path.exists(dep):
-                    all_imported_modules.add(os.path.normpath(dep))
+                potential_path = dep.replace(".", os.sep) + ".py"
+                if potential_path in file_paths_relative:
+                    all_imported_modules.add(potential_path)
+                init_path = os.path.join(dep.replace(".", os.sep), "__init__.py")
+                if init_path in file_paths_relative:
+                    all_imported_modules.add(init_path)
         unused = all_scanned_py_files - all_imported_modules
         unused = {f for f in unused if not f.endswith("__init__.py")}
         return sorted(list(unused))

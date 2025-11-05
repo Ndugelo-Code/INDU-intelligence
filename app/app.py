@@ -5,20 +5,33 @@ from app.components.file_browser import file_browser_view
 from app.states.state import InduState
 from app.components.dependencies import dependencies_view
 from app.components.unused import unused_view
+from app.components.upload import upload_view
 
 
 def main_content() -> rx.Component:
-    return rx.cond(
-        InduState.latest_snapshot,
+    return rx.el.main(
         rx.match(
             InduState.active_page,
-            ("Dashboard", dashboard_view()),
-            ("Components", file_browser_view()),
-            ("Dependencies", dependencies_view()),
-            ("Unused", unused_view()),
-            dashboard_view(),
+            ("Upload", upload_view()),
+            (
+                "Dashboard",
+                rx.cond(InduState.latest_snapshot, dashboard_view(), initial_view()),
+            ),
+            (
+                "Components",
+                rx.cond(InduState.latest_snapshot, file_browser_view(), initial_view()),
+            ),
+            (
+                "Dependencies",
+                rx.cond(InduState.latest_snapshot, dependencies_view(), initial_view()),
+            ),
+            (
+                "Unused",
+                rx.cond(InduState.latest_snapshot, unused_view(), initial_view()),
+            ),
+            upload_view(),
         ),
-        initial_view(),
+        class_name="flex-1",
     )
 
 
@@ -41,4 +54,4 @@ app = rx.App(
         ),
     ],
 )
-app.add_page(index)
+app.add_page(index, on_load=InduState.on_app_load)

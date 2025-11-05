@@ -42,6 +42,34 @@ A root-level development process utility that scans, analyzes, and reports on co
 
 ---
 
+## Phase 5: Drag-and-Drop File Upload (Low Complexity)
+- [ ] Create upload UI with drag-and-drop zone using rx.upload
+- [ ] Implement single file upload handler with file type validation
+- [ ] Add uploaded file display with preview (name, size, type)
+- [ ] Store uploaded files temporarily for processing
+- [ ] Update nav items to include "Upload" page
+
+---
+
+## Phase 6: Zip File Handling & Project Upload (Medium Complexity)
+- [ ] Add zip file detection and validation logic
+- [ ] Implement secure zip extraction to temporary directory
+- [ ] Add file size and archive size limits (max 100MB)
+- [ ] Create temporary workspace cleanup after scan completion
+- [ ] Handle nested zip files and malformed archives gracefully
+- [ ] Add progress indicator for zip extraction process
+
+---
+
+## Phase 7: Uploaded Project Scanning & Analysis (High Complexity)
+- [ ] Modify run_scan() to use uploaded project path when available
+- [ ] Automatically trigger scan after successful upload
+- [ ] Display uploaded project name in dashboard header (Local vs Uploaded: filename.zip)
+- [ ] Add cleanup on app load to remove lingering temp directories from previous sessions
+- [ ] Ensure clear_upload() properly removes temp files and resets state
+
+---
+
 ## Success Criteria
 - ✅ Scans project directory and categorizes all files
 - ✅ Calculates accurate code metrics (LOC, sizes, distributions)
@@ -50,14 +78,15 @@ A root-level development process utility that scans, analyzes, and reports on co
 - ✅ Detects unused components accurately
 - ✅ Exposes JSON APIs for external consumption
 - ✅ Provides complete interactive dashboard for developers
+- [ ] Supports drag-and-drop upload for individual files
+- [ ] Handles zip file extraction with file size limits (100MB max)
+- [ ] Automatic scanning after successful upload
+- [ ] Enhanced error handling and progress indicators
+- [ ] Temporary file cleanup and session management
 
 ---
 
-## Project Complete! 🎉
-
-All phases successfully implemented. The INDU Intelligence Framework is ready to:
-- Scan and analyze any codebase
-- Track metrics and detect unused components
-- Visualize dependencies and architecture violations
-- Provide filtering and search across all views
-- Integrate with external frontends via JSON APIs
+## Complexity Levels
+- **Low Complexity**: Drag-drop UI, file upload, basic metrics ✅ (Already have foundation)
+- **Medium Complexity**: Zip file handling, extraction, file size limits (Phase 6)
+- **High Complexity**: Multi-language import parsing ✅, dependency graphs ✅, unused detection ✅, scaling to uploaded projects (Phase 7)
